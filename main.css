@@ -1,15 +1,83 @@
 p {
     font-size: x-large;
-}
+    color: rgb(153, 30, 98);
+
+    }
+
 
 h1 {
-background-color: deeppink;
+background-color: rgb(146, 30, 117);
 }
 
 .aluna{
-    color: deeppink;
+    color: rgb(155, 22, 88);
     text-align: 2ex;
 }
 #b{
     text-align: center;
+    background-color: rgb(146, 33, 99);
+}
+
+
+.Buque{
+    width:400px;
+    height:300px;
+    border-radius: 50px;
+
+}
+
+.Buque2{
+    width: 400px;
+height: 300px;
+border-radius:  50px;
+
+
+
+}
+
+ 
+.bolsa1{
+
+    width: 400px;
+height: 300px;
+border-radius:  50px;
+}
+
+.bolsa1{
+    width: 400px;
+    height: 300px;
+    border-radius:  50px;
+
+}
+
+.bolsa1{
+    width: 400px;
+    height: 300px;
+    border-radius:  50px;
+}
+
+
+.flex-container {
+   margin: 0;
+   padding: 0;
+   display: flex;
+   list-style: none;
+}
+
+.flex-item {
+background-color: rgb(218, 59, 146);
+height: 50px;
+width: 50px;
+line-height: 50px;
+font-size: x-large;
+color: rgb(71, 4, 49);
+margin: 5px;
+}
+.linha {
+    flex-direction:row ;
+    justify-content: space-around;
+}
+aluna-reversa {
+    float: left;
+    flex-direction: column-reverse;
 }
