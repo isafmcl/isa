@@ -10,12 +10,12 @@ background-color: rgb(146, 30, 117);
 }
 
 .aluna{
-    color: rgb(155, 22, 88);
+    color: rgb(204, 72, 138);
     text-align: 2ex;
 }
 #b{
     text-align: center;
-    background-color: rgb(146, 33, 99);
+    background-color: rgb(206, 68, 149);
 }
 
 
@@ -65,7 +65,7 @@ border-radius:  50px;
 }
 
 .flex-item {
-background-color: rgb(218, 59, 146);
+background-color: rgb(255, 255, 255);
 height: 50px;
 width: 50px;
 line-height: 50px;
@@ -80,4 +80,10 @@ margin: 5px;
 aluna-reversa {
     float: left;
     flex-direction: column-reverse;
+}
+h1 {
+    background-color: rgb(223, 28, 142); color: rgb(134, 79, 148);"
+}
+body{
+    "background-color: rgb(255, 247, 247);"
 }
