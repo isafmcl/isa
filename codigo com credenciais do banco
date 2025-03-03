@@ -1,0 +1,610 @@
+import streamlit as st
+import pandas as pd
+import pywhatkit as kit
+from datetime import datetime
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import plotly.express as px
+import plotly.graph_objects as go
+import webbrowser
+from urllib.parse import quote
+import time
+import pyautogui
+import pyodbc
+
+# Configurações de conexão com o banco de dados
+server = 'emxdb.nuvemx.com.br'
+database = 'SQL SERVER'
+username = 'SEU_USUARIO'
+password = 'SUA_SENHA'
+conn_str = f'DRIVER={{SQL Server}};SERVER={server};DATABASE={database};UID={username};PWD={password}'
+
+# Função para obter os chamados do banco de dados
+def get_chamados():
+    try:
+        with pyodbc.connect(conn_str) as conn:
+            query = """
+            SELECT STATUS, * FROM VWCHAMADOSGERAL_NOLOCK_ATACADAO 
+            WHERE EMX_NOME_GRUPO = 'DTI SISTEMAS'
+            AND STATUS IN ('EM ESPERA', 'ANÁLISE AGENDADA','RESPONDIDO PELO USUÁRIO', 'PENDENTE FORNECEDOR', 'EM ANÁLISE')
+            """
+            df = pd.read_sql(query, conn)
+            
+            # Converter a coluna de data
+            df["Abertura"] = pd.to_datetime(df["Abertura"], dayfirst=True)
+            
+           
+            hoje = pd.Timestamp.now().normalize()
+            df["Abertura"] = df["Abertura"].dt.normalize()
+            df["Dias Abertos"] = (hoje - df["Abertura"]).dt.days
+            
+          
+            df['SLA Estourado'] = df.apply(lambda row: 
+                (str(row['Status']).strip().upper() in ['PENDENTE FORNECEDOR', 'PENDENTE USUÁRIO', 'ANÁLISE AGENDADA', 'EM ESPERA']) and 
+                (row['Dias Abertos'] >= 1 or
+                (row.get('SLA', '') == 'Vermelho') or 
+                (float(str(row.get('% SLA', '0')).replace('%', '')) >= 100)), 
+                axis=1)
+            
+          
+            df['Analista'] = df['Responsável']
+            
+            return df
+    except Exception as e:
+        st.error(f"Erro ao conectar com o banco de dados: {e}")
+        return None
+
+# Configuração da página q vai ser a tela principal q aparece o dash
+st.set_page_config(
+    page_title="Sistema de Controle de Chamados",
+    page_icon="📊",
+    layout="wide"
+)
+
+# Configuraçao de css
+st.markdown("""
+    <style>
+    .main {
+        padding: 0rem 1rem;
+    }
+    .stButton>button {
+        width: 100%;
+    }
+    .reportview-container {
+        background: #f0f2f6
+    }
+    .metric-card {
+        background-color: #ffffff;
+        border-radius: 10px;
+        padding: 15px;
+        box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
+        height: 150px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        color: #000000 !important;
+    }
+    .metric-card h3 {
+        margin-bottom: 10px;
+        font-size: 1.1rem;
+        white-space: nowrap;
+        color: #000000 !important;
+    }
+    .metric-card h2 {
+        font-size: 2rem;
+        margin: 0;
+    }
+    /* Ajustes para modo escuro */
+    [data-testid="stSidebar"] {
+        background-color: #0e1117;
+    }
+    [data-testid="stSidebarNav"] {
+        background-color: #0e1117;
+    }
+    .st-emotion-cache-1r6slb0.e1f1d6gn0 {
+        background-color: #ffffff;
+        color: #000000 !important;
+    }
+    /* Garante que os textos dos cards sejam sempre visíveis */
+    .metric-card p {
+        color: #000000 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+def ler_relatorio_excel(caminho_arquivo):
+    try:
+        df = pd.read_excel(caminho_arquivo)
+        
+        # tive q converter a coluna p data                                    
+        df["Abertura"] = pd.to_datetime(df["Abertura"], dayfirst=True)
+                                                    
+        # Calcular os dias abertos apenas dias inteiros               
+        hoje = pd.Timestamp.now().normalize()  
+        df["Abertura"] = df["Abertura"].dt.normalize()  # Normalizar também a data de abertura
+        df["Dias Abertos"] = (hoje - df["Abertura"]).dt.days
+        
+        # Identificar SLA estourado baseado na coluna SLA ou % SLA
+        #adicionei o em espera e tinha dado erro, agora ta dando erro na qtd de dias.
+
+        df['SLA Estourado'] = df.apply(lambda row: 
+    (str(row['Status']).strip().upper() in ['PENDENTE FORNECEDOR', 'PENDENTE USUÁRIO', 'ANÁLISE AGENDADA', 'EM ESPERA']) and 
+    (row['Dias Abertos'] >= 1 or #erro aqui
+     (row.get('SLA', '') == 'Vermelho') or 
+     (float(str(row.get('% SLA', '0')).replace('%', '')) >= 100)), 
+    axis=1)
+        
+        # vai puxar responsavel e n analista 
+        df['Analista'] = df['Responsável']
+        
+        return df
+    except Exception as e:
+        st.error(f"Erro ao ler o arquivo Excel: {e}")
+        return None
+
+
+if 'analistas' not in st.session_state:
+    st.session_state.analistas = {
+        "Gerson": "+5561985672288",
+        "Victor": "+556198637534",
+        "Gladstone":"+556192484268",
+        "Augusto": "+5561985849179",
+        "Estevam": "+556191833889"
+    }
+
+if 'gestores' not in st.session_state:
+    st.session_state.gestores = {
+        "michael": "michael.ribeiro@atacadaodiaadia.com.br"
+    }
+
+
+def enviar_email(df):
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = 'isabelle.oliveira@atacadaodiaadia.com.br'
+        
+     
+        corpo_email = f"""
+        Olá!
+
+        Segue o resumo dos chamados:
+
+        📊 Resumo Geral:
+        ----------------
+        Total de Chamados: {len(df)}
+        Chamados Abertos: {len(df[df['Status'] == 'Aberto'])}
+        Chamados com SLA estourado: {len(df[df['Dias Abertos'] >= 3])}
+
+        📈 Por Analista:
+        --------------
+        {df.groupby('Analista').size().to_string()}
+
+        ⚠️ Chamados com SLA Estourado por Analista:
+        ---------------------------------------
+        {df[df['Dias Abertos'] >= 3].groupby('Analista').size().to_string()}
+
+        Atenciosamente,
+        Sistema de Controle de Chamados
+        """
+        
+        msg.attach(MIMEText(corpo_email, 'plain'))
+        
+      
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(msg['From'], 'dcks hcqd jxct pngv')
+        
+        # Enviar p meus gestores
+        for gestor, email in st.session_state.gestores.items():
+            msg['To'] = email
+            msg['Subject'] = f"Relatório Diário de Chamados - {datetime.now().strftime('%d/%m/%Y')}"
+            text = msg.as_string()
+            server.sendmail(msg['From'], email, text)
+            st.success(f"Email enviado com sucesso para {gestor}!")
+            
+        server.quit()
+    except Exception as e:
+        st.error(f"Erro ao enviar e-mail: {e}")
+
+
+def enviar_whatsapp(df):
+    for analista, numero in st.session_state.analistas.items():
+        try:
+            # Filtra os chamados do analista
+            df_analista = df[df['Analista'] == analista]
+            
+            # Calcula as métricas
+            total_chamados = len(df_analista)
+            chamados_abertos = len(df_analista[df_analista['Status'].str.upper().isin(['PENDENTE FORNECEDOR', 'PENDENTE USUÁRIO', 'ANÁLISE AGENDADA', 'EM ESPERA'])])
+            sla_estourado = len(df_analista[df_analista['SLA Estourado'] == True])
+            
+            # Monta a mensagem
+            mensagem = (
+                f"🔔 Olá {analista}!\n\n"
+                f"Você tem chamados abertos na sua fila, "
+                f" e possui chamados com SLA estourado.\n\n"
+                f"Por favor, verifique e priorize as tratativas necessárias o quanto antes. Qualquer dúvida estou à disposição!"
+            )
+            
+            # Configura o horário para envio imediato
+            agora = datetime.now()
+            hora = agora.hour
+            minuto = agora.minute + 1
+            
+            # Envia a mensagem usando pywhatkit sem fechar a aba
+            kit.sendwhatmsg(numero, mensagem, hora, minuto, wait_time=15, tab_close=False)
+            
+            st.success(f"Mensagem enviada para {analista}")
+            time.sleep(60)  # Espera 1 minuto antes de enviar para o próximo analista
+            
+        except Exception as e:
+            st.error(f"Erro ao enviar WhatsApp para {analista}: {e}")
+
+# aqui vai criar o dashboard
+def criar_dashboard(df):
+    # Campos de entrada para editar os números dos cards (escondido em um expander)
+    with st.expander("⚙️ Configurações Avançadas", expanded=False):
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            total_chamados = st.number_input("Total de Chamados", value=len(df), min_value=0)
+
+        with col2:
+            chamados_abertos = st.number_input("Chamados Abertos", value=len(df[df['Status'] == 'Aberto']), min_value=0)
+
+        with col3:
+            sla_estourado = st.number_input("Chamados meses anteriores", value=df['SLA Estourado'].sum(), min_value=0)
+
+        with col4:
+            mes_atual = pd.Timestamp.now().month
+            total_meses_anteriores = st.number_input("Chamados com SLA Estourado", value=len(df[df['Abertura'].dt.month < mes_atual]), min_value=0)
+
+    st.markdown("<h2 style='text-align: center; color: #2c3e50; padding: 20px;'> 📊 Métricas Principais</h2>", unsafe_allow_html=True)
+
+    # Exibição dos cards com os valores editados
+    col1, col2, col3, col4 = st.columns(4)  
+    
+    # Card 1: Total de Chamados
+    with col1:
+        st.markdown(f"""
+            <div class="metric-card" style="box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                <h3>Total de Chamados</h3>
+                <h2 style='color: #1f77b4; font-size: 2.5rem;'>{total_chamados}</h2>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    # Card 2: Chamados Abertos
+    with col2:
+        st.markdown(f"""
+            <div class="metric-card" style="box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                <h3>Abertos +3 dias</h3>
+                <h2 style='color: #ff7f0e; font-size: 2.5rem;'>{chamados_abertos}</h2>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    # Card 4: Chamados Meses Anteriores
+    with col3:
+        st.markdown(f"""
+            <div class="metric-card" style="box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                <h3>Chamados Meses Anteriores</h3>
+                <h2 style='color: #2ca02c; font-size: 2.5rem;'>{total_meses_anteriores}</h2>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    # Card 3: Chamados com SLA Estourado
+    with col4:
+        st.markdown(f"""
+            <div class="metric-card" style="box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                <h3>SLA Estourado</h3>
+                <h2 style='color: #d62728; font-size: 2.5rem;'>{sla_estourado}</h2>
+            </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<h2 style='text-align: center; color: #2c3e50; padding: 20px;'> Análise de status e responsáveis</h2>", unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    
+    # Gráfico de pizza com estilo original
+    with col1:
+        status_counts = df['Status'].value_counts()
+        fig_status = px.pie(
+            values=status_counts.values,
+            names=status_counts.index,
+            title='Distribuição de Chamados',
+            color_discrete_sequence=px.colors.qualitative.Set3,
+            hole=0.4 
+        )
+        fig_status.update_traces(
+            textposition='inside',
+            textinfo='value',  # Mostra apenas o valor
+            textfont=dict(size=20)  # Aumentei o tamanho da fonte para 20
+        )
+        st.plotly_chart(fig_status, use_container_width=True)
+    
+    # Gráfico de barras com estilo melhorado
+    with col2:
+        analista_stats = df.groupby('Analista').agg({
+            'Código': 'count'
+        }).reset_index()
+        analista_stats.columns = ['Analista', 'Total Chamados']
+        
+        fig_analista = px.bar(
+            analista_stats,
+            x='Analista',
+            y='Total Chamados',
+            title='Análise por Analista',
+            text='Total Chamados',
+            color_discrete_sequence=['#1f77b4']
+        )
+        
+        fig_analista.update_traces(
+            textposition='outside',
+            textfont=dict(size=20),
+            marker_color='#1f77b4',
+            hovertemplate="<b>%{x}</b><br>Total: %{y}<extra></extra>",
+            textangle=0,
+            cliponaxis=False  # Impede que o texto seja cortado
+        )
+        
+        fig_analista.update_layout(
+            title_x=0.5,
+            title_font=dict(size=20),
+            xaxis_title="",
+            yaxis_title="Total de Chamados",
+            showlegend=False,
+            margin=dict(t=80, b=50, l=50, r=50),  # Aumentei a margem superior
+            bargap=0.4,
+            xaxis=dict(tickangle=0),
+            height=400  # Aumentei a altura do gráfico
+        )
+        
+        st.plotly_chart(fig_analista, use_container_width=True)
+
+def atualizar_dados():
+    if 'last_update' not in st.session_state:
+        st.session_state.last_update = datetime.now()
+        return True
+    
+    tempo_atual = datetime.now()
+    diferenca = (tempo_atual - st.session_state.last_update).total_seconds()
+    
+    # Atualiza a cada 5 minutos (300 segundos)
+    if diferenca >= 300:
+        st.session_state.last_update = tempo_atual
+        return True
+    return False
+
+def main():
+    # Verifica se precisa atualizar os dados
+    if atualizar_dados():
+        st.experimental_rerun()
+    
+    st.title("📊 Sistema de Controle de Chamados")
+    
+    # Menu lateral 
+    menu = st.sidebar.selectbox(
+        "Menu",
+        ["Painel Principal", "Enviar Notificações", "Configurações"]
+    )
+    
+    # Seção do Dash
+    if menu == "Painel Principal":
+        st.subheader("Painel de Controle de Chamados")
+        
+        # Botão para atualizar os dados
+        if st.sidebar.button("🔄 Atualizar Dados"):
+            st.experimental_rerun()
+        
+        # Obter dados do banco
+        df_atual = get_chamados()
+        
+        if df_atual is not None:
+            # Cria o dashboard com os dados
+            criar_dashboard(df_atual)
+            
+            # Adiciona os botões de envio no sidebar
+            col1, col2 = st.sidebar.columns(2)
+            with col1:
+                # Selectbox para escolher o analista
+                analista_selecionado = st.selectbox(
+                    "Selecione o analista",
+                    list(st.session_state.analistas.keys())
+                )
+                
+                if st.button("📱 Enviar WhatsApp", key='whatsapp_button'):
+                    try:
+                        # Filtra os chamados do analista selecionado
+                        df_analista = df_atual[df_atual['Analista'] == analista_selecionado]
+                        numero = st.session_state.analistas[analista_selecionado]
+                        
+                        # Monta a mensagem
+                        mensagem = (
+                            f"🔔 Olá {analista_selecionado}!\n\n"
+                            "Você tem chamados abertos na sua fila, "
+                            "e estão com SLA estourado.\n\n"
+                            f"Por favor, verifique e priorize as tratativas necessárias o quanto antes. Qualquer dúvida estou à disposição!"
+                        )
+                        
+                        # Prepara o número de telefone
+                        numero_formatado = numero.replace("+", "")
+                        mensagem_codificada = quote(mensagem)
+                        url = f"https://web.whatsapp.com/send?phone={numero_formatado}&text={mensagem_codificada}"
+                        
+                        webbrowser.open(url)
+                        time.sleep(20)
+                        pyautogui.press('enter')
+                        
+                        st.success(f"Mensagem enviada para {analista_selecionado}")
+                        
+                    except Exception as e:
+                        st.error(f"Erro ao enviar WhatsApp: {e}")
+            with col2:
+                if st.button("📧 Enviar Email"):
+                    enviar_email(df_atual)
+        else:
+            st.error("Não foi possível carregar os dados do banco. Verifique a conexão.")
+
+    elif menu == "Enviar Notificações":
+        st.title("Envio de Notificações")
+        
+        # Obter dados do banco
+        df = get_chamados()
+        
+        if df is not None:
+            st.subheader("Envio de WhatsApp")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                analistas_selecionados = st.multiselect(
+                    "Selecione os analistas",
+                    list(st.session_state.analistas.keys())
+                )
+                
+                mensagem_personalizada = st.text_area(
+                    "Mensagem personalizada (opcional)",
+                    "Mensagem para o envio no whatsapp"
+                )
+            
+            with col2:
+                st.info("Analistas selecionados:")
+                for analista in analistas_selecionados:
+                    st.write(f"- {analista}")
+            
+            # Botão para enviar WhatsApp
+            if st.button("Enviar WhatsApp para Analistas Selecionados"):
+                for analista in analistas_selecionados:
+                    try:
+                        numero = st.session_state.analistas[analista]
+                        df_analista = df[df['Analista'] == analista]
+                        
+                        # Calcula as métricas
+                        total_chamados = len(df_analista)
+                        chamados_abertos = len(df_analista[
+                            df_analista['Status'].str.upper().isin(['PENDENTE FORNECEDOR', 'PENDENTE USUÁRIO', 'ANÁLISE AGENDADA', 'EM ESPERA'])
+                        ])
+                        sla_estourado = len(df_analista[df_analista['SLA Estourado'] == True])
+                        
+                        # Monta a mensagem
+                        mensagem = (
+                            f"🔔 Olá {analista}!\n\n"
+                            f"Você tem {total_chamados} chamados na sua fila, "
+                            f"sendo {chamados_abertos} chamados abertos e "
+                            f"{sla_estourado} com SLA estourado.\n\n"
+                            f"{mensagem_personalizada}\n\n"
+                            "Por favor, verifique e priorize as tratativas necessárias o quanto antes. Qualquer dúvida estou à disposição!"
+                        )
+                        
+                        numero_formatado = numero.replace("+", "")
+                        mensagem_codificada = quote(mensagem)
+                        url = f"https://web.whatsapp.com/send?phone={numero_formatado}&text={mensagem_codificada}"
+                        
+                        webbrowser.open(url)
+                        time.sleep(20)
+                        pyautogui.press('enter')
+                        
+                        st.success(f"Mensagem enviada para {analista}")
+                        time.sleep(15)
+                        
+                    except Exception as e:
+                        st.error(f"Erro ao enviar mensagem para {analista}: {e}")
+            
+            st.subheader("Envio de Email")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                gestores_selecionados = st.multiselect(
+                    "Selecione os gestores",
+                    list(st.session_state.gestores.keys())
+                )
+                
+                assunto_personalizado = st.text_input(
+                    "Assunto do email",
+                    f"Resumo diário de chamados pendentes - {datetime.now().strftime('%d/%m/%Y')}"
+                )
+            
+            with col2:
+                st.info("Gestores selecionados:")
+                for gestor in gestores_selecionados:
+                    st.write(f"- {gestor}")
+            
+            if st.button("Enviar Email para Gestores Selecionados"):
+                try:
+                    msg = MIMEMultipart()
+                    msg['From'] = 'isabelle.oliveira@atacadaodiaadia.com.br'
+                    
+                    corpo_email = f"""
+                    Olá!
+
+                    Segue o resumo dos chamados:
+
+                    📊 Resumo Geral:
+                    ----------------
+                    Total de Chamados: {len(df)}
+                    Chamados Abertos: {len(df[df['Status'] == 'Aberto'])}
+                    Chamados com SLA estourado: {len(df[df['Dias Abertos'] >= 3])}
+
+                    📈 Por Analista:
+                    --------------
+                    {df.groupby('Analista').size().to_string()}
+
+                    ⚠️ Chamados com SLA Estourado por Analista:
+                    ---------------------------------------
+                    {df[df['Dias Abertos'] >= 3].groupby('Analista').size().to_string()}
+
+                    Atenciosamente,
+                    Sistema de Controle de Chamados
+                    """
+                    
+                    msg.attach(MIMEText(corpo_email, 'plain'))
+                    
+                    server = smtplib.SMTP('smtp.gmail.com', 587)
+                    server.starttls()
+                    server.login(msg['From'], 'dcks hcqd jxct pngv')
+                    
+                    for gestor in gestores_selecionados:
+                        try:
+                            email = st.session_state.gestores[gestor]
+                            msg['To'] = email
+                            msg['Subject'] = assunto_personalizado
+                            text = msg.as_string()
+                            server.sendmail(msg['From'], email, text)
+                            st.success(f"Email enviado para {gestor}")
+                        except Exception as e:
+                            st.error(f"Erro ao enviar email para {gestor}: {e}")
+                    
+                    server.quit()
+                except Exception as e:
+                    st.error(f"Erro ao configurar servidor de email: {e}")
+        else:
+            st.error("Não foi possível carregar os dados do banco. Verifique a conexão.")
+
+    elif menu == "Configurações":
+        st.subheader("Configurações do Sistema")
+        
+        # Configurações de Banco de Dados
+        st.write("### Configurações do Banco de Dados")
+        with st.expander("Editar Configurações do Banco"):
+            server = st.text_input("Servidor", server)
+            database = st.text_input("Banco de Dados", database)
+            username = st.text_input("Usuário", username)
+            password = st.text_input("Senha", type="password")
+        
+        st.write("### Analistas Cadastrados")
+        for analista, numero in st.session_state.analistas.items():
+            st.write(f"- {analista}: {numero}")
+        
+        st.write("### Gestores Cadastrados")
+        for gestor, email in st.session_state.gestores.items():
+            st.write(f"- {gestor}: {email}")
+        
+        # Configurações de email
+        st.write("### Configurações de Email")
+        email_remetente = st.text_input("Email do Remetente", "isabelle.oliveira@atacadaodiaadia.com.br")
+        senha_app = st.text_input("Senha do App", type="password")
+
+
+if __name__ == "__main__":
+    main()
